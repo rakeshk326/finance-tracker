@@ -33,6 +33,10 @@ public class Loan {
     @Column(name = "direction", nullable = false)
     private LoanType direction;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "account_id", nullable = false)
+    private Account account;
+
     @Column(nullable = false, precision = 12, scale = 2)
     private BigDecimal amount;
 

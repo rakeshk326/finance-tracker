@@ -3,13 +3,17 @@ package com.personal.finance_tracker.service;
 import com.personal.finance_tracker.dto.loan.CreateLoanRequestDTO;
 import com.personal.finance_tracker.dto.loan.LoanResponseDTO;
 import com.personal.finance_tracker.dto.loan.UpdateLoanRequestDTO;
+import com.personal.finance_tracker.entity.Account;
 import com.personal.finance_tracker.entity.Loan;
 import com.personal.finance_tracker.entity.User;
 import com.personal.finance_tracker.enums.LoanStatusType;
 import com.personal.finance_tracker.enums.LoanType;
 import com.personal.finance_tracker.event.model.LoanCreatedEvent;
+import com.personal.finance_tracker.event.model.LoanDeletedEvent;
+import com.personal.finance_tracker.event.model.LoanUpdatedEvent;
 import com.personal.finance_tracker.exception.ResourceNotFoundException;
 import com.personal.finance_tracker.mapper.LoanMapper;
+import com.personal.finance_tracker.repository.AccountRepository;
 import com.personal.finance_tracker.repository.LoanRepository;
 import com.personal.finance_tracker.specification.LoanSpecification;
 import com.personal.finance_tracker.utils.SecurityUtil;
@@ -24,6 +28,7 @@ import org.springframework.data.jpa.domain.Specification;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
@@ -32,6 +37,9 @@ public class LoanServiceImpl implements LoanService {
 
     @Autowired
     LoanRepository loanRepository;
+
+    @Autowired
+    AccountRepository accountRepository;
 
     @Autowired
     LoanMapper loanMapper;
@@ -66,18 +74,26 @@ public class LoanServiceImpl implements LoanService {
 
         UUID userId = SecurityUtil.getCurrentUserId();
 
+        Account account = accountRepository.findById(createLoanRequestDTO.getAccountId())
+                .orElseThrow(() -> new ResourceNotFoundException("Account not found"));
+
+        if (!account.getUser().getId().equals(userId)) {
+            throw new AccessDeniedException("Unauthorized access to account");
+        }
+
         Loan loan = loanMapper.toEntity(createLoanRequestDTO);
 
         User user = new User();
         user.setId(userId);
         loan.setUser(user);
         loan.setStatus(LoanStatusType.PENDING);
+        loan.setAccount(account);
 
         Loan createdLoan = loanRepository.save(loan);
 
         applicationEventPublisher.publishEvent(
                 new LoanCreatedEvent(
-                        createdLoan.getId(), createLoanRequestDTO.getAccountId(), userId, createdLoan.getDirection(), createdLoan.getAmount(), createdLoan.getDescription()
+                        createdLoan.getId(), createdLoan.getAccount().getId(), userId, createdLoan.getDirection(), createdLoan.getAmount(), createdLoan.getDescription()
                 ));
 
         return loanMapper.toLoanResponseDTO(createdLoan);
@@ -94,6 +110,20 @@ public class LoanServiceImpl implements LoanService {
 
         if (!loan.getUser().getId().equals(userId)) {
             throw new AccessDeniedException("Access denied");
+        }
+
+        UUID oldAccountId = loan.getAccount().getId();
+        LoanType oldDirection = loan.getDirection();
+        BigDecimal oldAmount = loan.getAmount();
+
+        if(updateLoanRequestDTO.getAccountId() != null) {
+            Account account = accountRepository.findById(updateLoanRequestDTO.getAccountId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Account not found"));
+
+            if (!account.getUser().getId().equals(userId)) {
+                throw new AccessDeniedException("Unauthorized access to account");
+            }
+            loan.setAccount(account);
         }
 
         if(updateLoanRequestDTO.getCounterpartyName() != null) {
@@ -117,6 +147,13 @@ public class LoanServiceImpl implements LoanService {
         }
 
         Loan updatedLoan = loanRepository.save(loan);
+
+        if(updateLoanRequestDTO.getAccountId() != null || updateLoanRequestDTO.getDirection() != null || updateLoanRequestDTO.getAmount() != null) {
+            applicationEventPublisher.publishEvent(
+                    new LoanUpdatedEvent(userId, loan.getId(), oldAccountId, loan.getAccount().getId(), oldDirection, updatedLoan.getDirection(), oldAmount, loan.getAmount()
+                    ));
+        }
+
         return loanMapper.toLoanResponseDTO(updatedLoan);
 
     }
@@ -136,6 +173,11 @@ public class LoanServiceImpl implements LoanService {
 
         loan.setDeletedAt(LocalDateTime.now());
         loanRepository.save(loan);
+
+        applicationEventPublisher.publishEvent(
+                new LoanDeletedEvent(
+                        id, loan.getAccount().getId(), userId, loan.getDirection(), loan.getAmount(), loan.getDescription()
+                ));
     }
 
 }
